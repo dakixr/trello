@@ -77,6 +77,29 @@ class TrelloClient:
 
         return json.loads(raw)
 
+    def _post(self, path: str, *, params: dict[str, Any]) -> Any:
+        """Make a POST request to the Trello API."""
+        merged = {
+            "key": self._api_key,
+            "token": self._token,
+            **params,
+        }
+        qs = urlencode({k: str(v) for k, v in merged.items() if v is not None})
+        url = f"{TRELLO_BASE_URL}{path}?{qs}"
+        req = Request(url, method="POST", headers={"Accept": "application/json"})
+
+        try:
+            with urlopen(req, timeout=self._timeout_s) as resp:
+                raw = resp.read().decode("utf-8")
+        except HTTPError as e:
+            try:
+                detail = e.read().decode("utf-8")
+            except Exception:
+                detail = str(e)
+            raise RuntimeError(f"Trello API error {e.code}: {detail}") from e
+
+        return json.loads(raw) if raw else None
+
     def fetch_cards_for_list(
         self, list_id: str, *, include_closed: bool
     ) -> list[dict[str, Any]]:
@@ -125,6 +148,21 @@ class TrelloClient:
                 "filter": "all" if include_closed else "open",
                 "fields": "id,name,url,shortUrl,closed,dateLastActivity",
             },
+        )
+
+    def add_comment_to_card(self, card_id: str, text: str) -> dict[str, Any]:
+        """Add a comment to a Trello card.
+
+        Args:
+            card_id: The ID of the card to add a comment to.
+            text: The comment text.
+
+        Returns:
+            The created comment action as a dictionary.
+        """
+        return self._post(
+            f"/cards/{card_id}/actions/comments",
+            params={"text": text},
         )
 
 

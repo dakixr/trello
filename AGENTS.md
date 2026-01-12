@@ -1,121 +1,124 @@
-# Agentic Coding Guidelines for Trello Fetcher
+# Agent Guide - Trello Fetcher
 
-This repository contains a Python-based CLI tool for fetching cards and boards from Trello.
+This document provides essential information for agentic coding assistants working on the `trello_fetcher` repository.
 
-## 🛠 Build, Lint, and Test Commands
+## Project Overview
+A Python-based utility to fetch cards from Trello boards and lists. It includes both a CLI for data extraction and a TUI (Textual-based) for interactive browsing.
 
-This project uses `uv` for dependency management and environment isolation.
+- **Stack:** Python 3.12+, `uv`, `requests`, `textual`.
+- **Layout:** Source code is in `src/trello_fetcher/`.
+- **Key Modules:**
+    - `fetch_tasks.py`: Core logic for Trello API interaction and Task models.
+    - `list_boards.py`: Logic for listing and modeling Trello boards.
+    - `tui.py`: Textual-based user interface implementation.
+    - `__main__.py`: CLI entry point for the package.
 
-### Installation
+## Critical Commands
+
+### Environment Setup
 ```bash
-# Install dependencies and create a virtual environment
+# Install dependencies and create venv
 uv sync
+
+# Copy example env
+cp env.example .env
 ```
 
-### Running the CLI
+### Running the Application
 ```bash
-# Main card fetcher
-uv run python -m trello_fetcher --board-id <ID> --format text
+# Start the TUI (main entry point)
+uv run trello
+
+# Run CLI to fetch tasks
+uv run python -m trello_fetcher.fetch_tasks --board-id <ID> --format text
 
 # List boards to find IDs
-uv run python -m trello_fetcher.list_boards --format text
+uv run python -m trello_fetcher.list_boards
 ```
 
-### Linting and Testing
-Currently, the project does not have dedicated linting or testing dependencies (like `ruff` or `pytest`). 
-- **Type Checking**: Use `mypy` or `pyright` if available in your environment.
-- **Testing**: No test suite exists. If you add tests, place them in a `tests/` directory and use `pytest`.
+### Development & Quality
+*Note: This project currently has no configured tests or linters in pyproject.toml. However, `.ruff_cache` exists, suggesting ruff usage.*
 
-## 🎨 Code Style Guidelines
-
-### Python Version
-- Target **Python 3.12+**.
-- Always use `from __future__ import annotations` at the top of every file.
-
-### Imports
-- Group imports: standard library, third-party, then local modules.
-- Use absolute imports for local modules (e.g., `from .fetch_tasks import ...`).
-
-### Type Hinting
-- Strict type hinting is required for all function signatures and class members.
-- Use `|` for unions (e.g., `str | None`) instead of `Optional`.
-- Use built-in generics (e.g., `list[str]`, `dict[str, Any]`).
-
-### Data Models
-- Use `@dataclass(frozen=True, slots=True)` for data structures and models.
-- Avoid complex classes; prefer functional approaches with plain data objects.
-
-### Naming Conventions
-- **Files**: `snake_case.py`.
-- **Classes**: `PascalCase`.
-- **Functions/Variables**: `snake_case`.
-- **Constants**: `UPPER_SNAKE_CASE`.
-- **Private members**: Prefix with a single underscore `_`.
-
-### Error Handling
-- Use `RuntimeError` for operational errors (e.g., API failures).
-- Use `SystemExit` with a descriptive message for CLI-level errors in `main`.
-- Avoid broad `except Exception:` blocks; catch specific errors (e.g., `urllib.error.HTTPError`).
-
-### API Interactions
-- All Trello API calls must go through the `TrelloClient` class in `fetch_tasks.py`.
-- The client uses `urllib.request` to keep dependencies minimal.
-- Common patterns:
-  - `fetch_cards_for_board(board_id, include_closed=False)`
-  - `fetch_lists_for_board(board_id, include_closed=True)`
-  - `fetch_my_boards(include_closed=False)`
-
-### Core Data Models
-Refer to `fetch_tasks.py` for the source of truth.
-- `Task`: Main model for Trello cards.
-- `Board`: Model for Trello boards (defined in `list_boards.py`).
-
-Example `Task` usage:
-```python
-task = Task(
-    id="...",
-    name="...",
-    url="...",
-    short_url="...",
-    desc="...",
-    due="2026-01-11T12:00:00Z",
-    due_complete=False,
-    closed=False,
-    list_id="...",
-    list_name="...",
-    last_activity="...",
-    labels=["label1", "label2"]
-)
-```
-
-### CLI Implementation
-- Use `argparse` for argument parsing.
-- Implement a `main(argv: list[str] | None = None) -> int` function.
-- Support `.env` files via the internal `_load_env` utility.
-- Entry points are defined in `pyproject.toml` (if any) or invoked via `python -m`.
-
-## 📁 Project Structure
-- `src/trello_fetcher/`: Core package.
-- `src/trello_fetcher/__main__.py`: CLI entry point (calls `fetch_tasks.main`).
-- `src/trello_fetcher/fetch_tasks.py`: Primary logic for fetching cards.
-- `src/trello_fetcher/list_boards.py`: Utility for listing boards.
-- `py.typed`: Marker file for PEP 561 compliance.
-
-## 📝 Example CLI usage for Development
 ```bash
-# Fetch and print as JSON
-uv run python -m trello_fetcher --board-id 123
+# Linting (Recommended: ruff)
+uv run ruff check .
+uv run ruff format .
 
-# Fetch and print as Text
-uv run python -m trello_fetcher --board-id 123 --format text --include-desc
-
-# Save to file
-uv run python -m trello_fetcher --board-id 123 --out cards.json
+# Testing (Recommended: pytest)
+uv run pytest
+uv run pytest tests/test_file.py::test_function
 ```
 
-## 🤖 AI Context
-- No specific `.cursorrules` or `.github/copilot-instructions.md` exist.
-- Always follow the patterns in `fetch_tasks.py` for new feature implementation.
-- Maintain the lightweight, "mostly standard library" feel of the project.
-- When adding new modules, ensure they are placed inside `src/trello_fetcher/`.
-- Ensure all new files include `from __future__ import annotations`.
+## Code Style Guidelines
+
+### 1. Python Standards
+- Use **Python 3.12+** features (e.g., `type1 | type2` union syntax).
+- **Type Hints:** Mandatory for all function signatures and public attributes.
+- **Imports:** 
+    - Always include `from __future__ import annotations`.
+    - Group imports: Standard library, third-party, local modules.
+    - Sort imports alphabetically within groups.
+- **Formatting:** Follow PEP 8. Use 4 spaces for indentation.
+
+### 2. Architecture & Patterns
+- **Data Models:** Use `dataclass(frozen=True, slots=True)` for immutable data structures (see `Task` in `fetch_tasks.py` and `Board` in `list_boards.py`).
+- **File I/O:** Use `pathlib.Path` instead of `os.path`.
+- **Networking:** 
+    - `TrelloClient` in `fetch_tasks.py` uses `urllib.request` for base API calls to minimize dependencies.
+    - Always handle `urllib.error.HTTPError` and wrap in `RuntimeError` with descriptive messages.
+- **TUI (Textual):**
+    - Follow the `Screen` and `App` patterns.
+    - Use `@work(thread=True)` for all I/O bound tasks (API calls) to keep the UI responsive.
+    - Use `self.app.call_from_thread()` to update the UI from worker threads.
+    - Define CSS as a class attribute `CSS` within `Screen` or `App` classes.
+
+### 3. Error Handling
+- Use descriptive exceptions. `RuntimeError` is preferred for API or business logic failures.
+- In CLI entry points, use `raise SystemExit("message")` for user-facing fatal errors to ensure clean exits with non-zero codes.
+- In TUI, catch exceptions in workers and use `self.app.notify()` for transient errors or update UI labels for persistent errors.
+
+### 4. Naming Conventions
+- Variables/Functions: `snake_case`.
+- Classes: `PascalCase`.
+- Private members: `_leading_underscore`.
+- Constants: `UPPER_SNAKE_CASE`.
+
+## Trello API Integration
+The application interacts with the Trello REST API v1.
+- Base URL: `https://api.trello.com/1`
+- Authentication: Requires `api_key` and `token` passed as query parameters.
+- Common Fields fetched: `id, name, desc, due, dueComplete, url, shortUrl, labels, idList, closed, dateLastActivity`.
+- Reference: [Trello API Documentation](https://developer.atlassian.com/cloud/trello/rest/)
+
+## TUI Structure
+The TUI (`tui.py`) uses a screen-based navigation:
+1. `BoardSelectScreen`: Lists available boards for the user to choose from.
+2. `TaskViewerScreen`: Displays tasks for the selected board, organized by list. Includes a detail panel with Markdown support for descriptions.
+
+## Development Workflow for Agents
+1. **Analyze Requirements:** Determine if the change affects data models, API fetching, CLI, or TUI.
+2. **Update Models:** If adding fields, update the relevant `@dataclass` in `fetch_tasks.py` or `list_boards.py`.
+3. **API Logic:** Update `TrelloClient` methods to fetch the necessary data. Ensure proper type casting from JSON responses.
+4. **CLI Support:** Update `_write_output` and `main()` in `fetch_tasks.py` if new flags or output formats are needed.
+5. **TUI Support:**
+    - Update `compose()` to add new widgets.
+    - Update CSS in the `CSS` class attribute.
+    - Update `@work` methods for background data fetching.
+    - Use `self.app.notify()` for user feedback on actions.
+6. **Verification:**
+    - Run `uv run ruff check .` to ensure no linting regressions.
+    - Run the CLI with various flags to verify data extraction.
+    - Run the TUI and navigate through screens to ensure UI stability and responsiveness.
+    - Add unit tests in `tests/` for complex logic.
+
+## Agent Instructions & Constraints
+- **Proactiveness:** 
+    - If adding a new data field to `Task`, ensure it's handled in `_cards_to_tasks` and displayed in both CLI output and TUI detail panel.
+    - If adding a new CLI flag, consider if it should also be a setting or toggle in the TUI.
+- **Documentation:** Maintain Google-style docstrings. Every new class and public method must have a docstring.
+- **Security:** 
+    - NEVER commit `.env` files or hardcode API keys.
+    - Use `_load_env` to load credentials from `.env` during local development.
+- **Testing:** If you implement a new feature, you are encouraged to add a corresponding test in a `tests/` directory using `pytest`.
+- **TUI Responsiveness:** Always ensure API calls are offloaded to threads using Textual's `@work` decorator.
+- **Dependency Management:** Use `uv add <package>` to add new dependencies and ensure `pyproject.toml` is updated.
