@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -447,6 +448,7 @@ class TaskViewerScreen(Screen[None]):
         Binding("q", "quit", "Quit"),
         Binding("b", "back", "Back to boards"),
         Binding("r", "refresh", "Refresh"),
+        Binding("enter", "open_browser", "Open in browser"),
         Binding("space", "toggle_select", "Select task"),
         Binding("d", "toggle_done", "Mark done"),
         Binding("c", "copy_task", "Copy task"),
@@ -676,7 +678,9 @@ class TaskViewerScreen(Screen[None]):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if hasattr(event.item, "data"):
             task: Task = event.item.data  # type: ignore[attr-defined]
+            self._focused_task = task
             self._show_task_detail(task)
+            self.action_open_browser()
         else:
             self._focused_task = None
 
@@ -687,6 +691,20 @@ class TaskViewerScreen(Screen[None]):
             self._show_task_detail(task)
         else:
             self._focused_task = None
+
+    def action_open_browser(self) -> None:
+        """Open the focused task in the default browser."""
+        if self._focused_task is None:
+            self.app.notify("Select a task first.", severity="warning")
+            return
+
+        url = self._focused_task.url or self._focused_task.short_url
+        if not url:
+            self.app.notify("Task has no URL.", severity="warning")
+            return
+
+        webbrowser.open(url)
+        self.app.notify(f"Opened: {self._focused_task.name}")
 
     def _show_task_detail(self, task: Task) -> None:
         no_selection = self.query_one("#no-selection", Static)
