@@ -32,6 +32,7 @@ from .list_boards import Board, _boards_to_models
 
 CONFIG_DIR = Path.home() / ".config" / "trello_fetcher"
 BOARDS_CONFIG_FILE = CONFIG_DIR / "boards.json"
+DONE_TASKS_FILE = CONFIG_DIR / "done_tasks.json"
 
 
 @dataclass
@@ -72,6 +73,40 @@ def _save_board_config(board_id: str, repo_path: str | None) -> None:
 
     data = {bid: {"repo_path": cfg.repo_path} for bid, cfg in configs.items()}
     BOARDS_CONFIG_FILE.write_text(json.dumps(data, indent=2))
+
+
+def _load_done_tasks(board_id: str) -> set[str]:
+    """Load done task IDs for a board from disk."""
+    if not DONE_TASKS_FILE.exists():
+        return set()
+
+    try:
+        data = json.loads(DONE_TASKS_FILE.read_text())
+        return set(data.get(board_id, []))
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+
+def _save_done_tasks(board_id: str, done_task_ids: set[str]) -> None:
+    """Save done task IDs for a board to disk."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Load existing data for other boards
+    try:
+        if DONE_TASKS_FILE.exists():
+            data = json.loads(DONE_TASKS_FILE.read_text())
+        else:
+            data = {}
+    except (json.JSONDecodeError, OSError):
+        data = {}
+
+    # Update this board's done tasks
+    if done_task_ids:
+        data[board_id] = sorted(done_task_ids)
+    elif board_id in data:
+        del data[board_id]
+
+    DONE_TASKS_FILE.write_text(json.dumps(data, indent=2))
 
 
 @dataclass
@@ -560,7 +595,7 @@ class TaskViewerScreen(Screen[None]):
         self._list_order: list[str] = []  # List IDs in Trello board order
         self._focused_task: Task | None = None
         self._selected_task_ids: set[str] = set()
-        self._done_task_ids: set[str] = set()
+        self._done_task_ids: set[str] = _load_done_tasks(board.id)
         self._task_labels: dict[str, Label] = {}
         self._task_items: dict[str, ListItem] = {}
 
@@ -631,7 +666,7 @@ class TaskViewerScreen(Screen[None]):
         self._task_labels.clear()
         self._task_items.clear()
         self._selected_task_ids.clear()
-        self._done_task_ids.clear()
+        # Note: _done_task_ids is NOT cleared - it persists across reloads
         self._focused_task = None
 
         # Group tasks by list_id
@@ -668,6 +703,8 @@ class TaskViewerScreen(Screen[None]):
                 label = Label(self._format_task_label(task), classes="task-item")
                 item = ListItem(label)
                 item.data = task  # type: ignore[attr-defined]
+                if task.id in self._done_task_ids:
+                    item.add_class("task-item-done")
                 task_list.append(item)
                 self._task_labels[task.id] = label
                 self._task_items[task.id] = item
@@ -763,8 +800,21 @@ class TaskViewerScreen(Screen[None]):
             blocks.append(f"{task.name}\n{description}")
 
         payload = "\n\n---\n\n".join(blocks)
-        self.app.copy_to_clipboard(payload)
-        self.app.notify(f"Copied {len(tasks)} task(s) to clipboard.")
+        try:
+            # Use pbcopy on macOS for reliable clipboard access
+            process = subprocess.Popen(
+                ["pbcopy"],
+                stdin=subprocess.PIPE,
+            )
+            process.communicate(input=payload.encode("utf-8"))
+            if process.returncode == 0:
+                self.app.notify(f"Copied {len(tasks)} task(s) to clipboard.")
+            else:
+                self.app.notify("Failed to copy to clipboard.", severity="error")
+        except FileNotFoundError:
+            # Fall back to Textual's clipboard (OSC 52)
+            self.app.copy_to_clipboard(payload)
+            self.app.notify(f"Copied {len(tasks)} task(s) to clipboard.")
 
     def action_toggle_select(self) -> None:
         if self._focused_task is None:
@@ -787,6 +837,9 @@ class TaskViewerScreen(Screen[None]):
             self._done_task_ids.remove(task.id)
         else:
             self._done_task_ids.add(task.id)
+
+        # Persist to disk
+        _save_done_tasks(self._board.id, self._done_task_ids)
 
         # Update label text
         label = self._task_labels.get(task.id)
@@ -946,40 +999,65 @@ class TaskViewerScreen(Screen[None]):
 
     @work(thread=True)
     def _execute_script(self, script_path: Path, task: Task) -> None:
-        """Execute the script in a new Ghostty terminal window."""
+        """Execute the script in a new Ghostty terminal window.
+
+        Scripts with '.direct.' in the name (e.g., 'rspi.direct.sh') are executed
+        directly without a Ghostty wrapper, for scripts that launch their own terminal.
+        """
         env = self._build_script_env(task)
         cwd = self._board_config.repo_path if self._board_config else str(Path.home())
 
+        # Check if this is a "direct" script (launches its own terminal)
+        is_direct = ".direct." in script_path.name
+
         try:
-            # Build export statements for environment variables
-            exports = []
-            for key, value in env.items():
-                if key.startswith(("TASK_", "BOARD_", "REPO_")):
-                    # Escape single quotes in values
-                    escaped_value = value.replace("'", "'\"'\"'")
-                    exports.append(f"export {key}='{escaped_value}'")
+            if is_direct:
+                # Direct execution without Ghostty wrapper
+                if script_path.suffix == ".py":
+                    cmd = ["python", str(script_path)]
+                else:
+                    cmd = [str(script_path)]
 
-            exports_str = "; ".join(exports)
+                subprocess.Popen(
+                    cmd,
+                    cwd=cwd,
+                    env=env,
+                    start_new_session=True,
+                )
 
-            # Determine how to run the script
-            if script_path.suffix == ".py":
-                script_cmd = f"python '{script_path}'"
+                self.app.call_from_thread(
+                    self.app.notify, f"Launched {script_path.name} directly"
+                )
             else:
-                script_cmd = f"'{script_path}'"
+                # Build export statements for environment variables
+                exports = []
+                for key, value in env.items():
+                    if key.startswith(("TASK_", "BOARD_", "REPO_")):
+                        # Escape single quotes in values
+                        escaped_value = value.replace("'", "'\"'\"'")
+                        exports.append(f"export {key}='{escaped_value}'")
 
-            # Build the full command to run in Ghostty
-            # cd to cwd, export env vars, run script, then keep shell open on error
-            full_cmd = f"cd '{cwd}' && {exports_str}; {script_cmd}"
+                exports_str = "; ".join(exports)
 
-            # Launch in Ghostty
-            subprocess.Popen(
-                ["ghostty", "-e", "bash", "-c", full_cmd],
-                start_new_session=True,
-            )
+                # Determine how to run the script
+                if script_path.suffix == ".py":
+                    script_cmd = f"python '{script_path}'"
+                else:
+                    script_cmd = f"'{script_path}'"
 
-            self.app.call_from_thread(
-                self.app.notify, f"Launched {script_path.name} in Ghostty"
-            )
+                # Build the full command to run in Ghostty
+                # cd to cwd, export env vars, run script, then keep shell open on error
+                full_cmd = f"cd '{cwd}' && {exports_str}; {script_cmd}"
+
+                # Launch in Ghostty
+                subprocess.Popen(
+                    ["ghostty", "-e", "bash", "-c", full_cmd],
+                    start_new_session=True,
+                )
+
+                self.app.call_from_thread(
+                    self.app.notify, f"Launched {script_path.name} in Ghostty"
+                )
 
         except FileNotFoundError:
             self.app.call_from_thread(
