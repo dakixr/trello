@@ -227,14 +227,14 @@ def _write_output(
         print(content, end="")
 
 
-def _load_env(env_file: str | None) -> None:
+def _load_env_from_path(path: Path) -> None:
     """
-    Minimal .env loader:
+    Load environment variables from a single .env file.
+
     - Supports lines like KEY=VALUE (VALUE may be quoted).
     - Ignores blank lines and comments (# ...).
     - Does not override existing environment variables.
     """
-    path = Path(env_file) if env_file else (Path.cwd() / ".env")
     if not path.exists():
         return
 
@@ -251,6 +251,26 @@ def _load_env(env_file: str | None) -> None:
             value = value[1:-1]
         if key and key not in os.environ:
             os.environ[key] = value
+
+
+def _load_env(env_file: str | None) -> None:
+    """
+    Load environment variables from .env files.
+
+    Search order:
+    1. Explicit env_file if provided.
+    2. .env in the current working directory.
+    3. ~/.config/trello_fetcher/.env as a global fallback.
+
+    Variables from earlier sources take precedence (won't be overridden).
+    """
+    if env_file:
+        _load_env_from_path(Path(env_file))
+    else:
+        # Load from cwd first
+        _load_env_from_path(Path.cwd() / ".env")
+        # Then load from global config dir (won't override existing vars)
+        _load_env_from_path(Path.home() / ".config" / "trello_fetcher" / ".env")
 
 
 def main(argv: list[str] | None = None) -> int:
