@@ -13,7 +13,8 @@ dependencies = [
 ]
 
 [project.scripts]
-trello = "trello_fetcher.tui:main"
+trello = "trello_fetcher.main:main"
+trello-tui = "trello_fetcher.tui:main"
 
 [build-system]
 requires = ["uv_build>=0.9.22,<0.10.0"]
