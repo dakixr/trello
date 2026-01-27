@@ -6,6 +6,7 @@ import subprocess
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Generic, TypeVar
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -26,6 +27,25 @@ from textual.widgets import (
 
 from .fetch_tasks import Task, TrelloClient, _cards_to_tasks, _load_env
 from .list_boards import Board, _boards_to_models
+
+# --- Typed ListItem payloads ---
+
+TData = TypeVar("TData")
+
+
+class DataListItem(ListItem, Generic[TData]):
+    """A `ListItem` that carries a typed `data` payload.
+
+    Textual's `ListItem` doesn't declare a `data` attribute, but this app uses it
+    as a convenient per-row payload. This subclass keeps runtime behavior the
+    same while making type checkers aware of `.data`.
+    """
+
+    data: TData
+
+    def __init__(self, *children: Any, data: TData, **kwargs: Any) -> None:
+        super().__init__(*children, **kwargs)
+        self.data = data
 
 
 # --- Config Management ---
@@ -263,16 +283,15 @@ class ScriptSelectModal(ModalScreen[list[Path]]):
             else:
                 location = "global"
             label = Label(f"[ ] {script.name} ({location})", classes="script-item")
-            item = ListItem(label)
-            item.data = i  # type: ignore[attr-defined]
+            item = DataListItem(label, data=i)
             script_list.append(item)
         if self._scripts:
             script_list.focus()
 
     def _update_item_display(self, index: int) -> None:
         script_list = self.query_one("#script-list", ListView)
-        for item in script_list.query(ListItem):
-            if hasattr(item, "data") and item.data == index:
+        for item in script_list.query(DataListItem):
+            if item.data == index:
                 script = self._scripts[index]
                 if ".trello" in str(script):
                     location = "repo"
@@ -293,10 +312,8 @@ class ScriptSelectModal(ModalScreen[list[Path]]):
 
     def action_toggle_select(self) -> None:
         script_list = self.query_one("#script-list", ListView)
-        if script_list.highlighted_child and hasattr(
-            script_list.highlighted_child, "data"
-        ):
-            index: int = script_list.highlighted_child.data  # type: ignore[attr-defined]
+        if isinstance(script_list.highlighted_child, DataListItem):
+            index: int = script_list.highlighted_child.data
             if index in self._selected:
                 self._selected.remove(index)
             else:
@@ -311,10 +328,8 @@ class ScriptSelectModal(ModalScreen[list[Path]]):
         else:
             # Nothing selected - run the highlighted script
             script_list = self.query_one("#script-list", ListView)
-            if script_list.highlighted_child and hasattr(
-                script_list.highlighted_child, "data"
-            ):
-                index: int = script_list.highlighted_child.data  # type: ignore[attr-defined]
+            if isinstance(script_list.highlighted_child, DataListItem):
+                index: int = script_list.highlighted_child.data
                 self.dismiss([self._scripts[index]])
             else:
                 self.dismiss([])
@@ -988,14 +1003,16 @@ class TaskViewerScreen(Screen[None]):
 
         task = self._focused_task
 
-        def handle_script_selection(selected: list[Path]) -> None:
+        def handle_script_selection(selected: list[Path] | None) -> None:
             if not selected:
                 return
             for script_path in selected:
                 self.app.notify(f"Launching {script_path.name}...")
                 self._execute_script(script_path, task)
 
-        self.app.push_screen(ScriptSelectModal(scripts), handle_script_selection)
+        self.app.push_screen(
+            ScriptSelectModal(scripts), callback=handle_script_selection
+        )
 
     @work(thread=True)
     def _execute_script(self, script_path: Path, task: Task) -> None:

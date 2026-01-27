@@ -7,7 +7,7 @@ import argparse
 import json
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 from urllib.error import HTTPError
@@ -15,6 +15,13 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 TRELLO_BASE_URL = "https://api.trello.com/1"
+CONFIG_DIR = Path.home() / ".config" / "trello_fetcher"
+BOARDS_CONFIG_FILE = CONFIG_DIR / "boards.json"
+DONE_TASKS_FILE = CONFIG_DIR / "done_tasks.json"
+
+
+def _now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
 
 
 def _parse_trello_datetime(value: str | None) -> str | None:
@@ -36,6 +43,7 @@ def _parse_trello_datetime(value: str | None) -> str | None:
 @dataclass(frozen=True, slots=True)
 class BoardConfig:
     """Configuration for a linked board."""
+
     board_id: str
     repo_path: str | None = None
     created_at: str | None = None
@@ -146,6 +154,38 @@ class TrelloClient:
             },
         )
 
+    def fetch_board(self, board_id: str) -> dict[str, Any]:
+        """Fetch a single board by ID.
+
+        Args:
+            board_id: Trello board ID.
+
+        Returns:
+            Board dict containing at least id, name, url, shortUrl, closed.
+        """
+        return self._get(
+            f"/boards/{board_id}",
+            params={
+                "fields": "id,name,url,shortUrl,closed,dateLastActivity",
+            },
+        )
+
+    def fetch_card(self, card_id: str) -> dict[str, Any]:
+        """Fetch a single card by ID.
+
+        Args:
+            card_id: Trello card ID.
+
+        Returns:
+            Card dict containing at least id, name, idBoard.
+        """
+        return self._get(
+            f"/cards/{card_id}",
+            params={
+                "fields": "id,name,idBoard",
+            },
+        )
+
     def add_comment_to_card(self, card_id: str, text: str) -> dict[str, Any]:
         """Add a comment to a Trello card.
 
@@ -207,8 +247,6 @@ def _load_env_from_path(path: Path) -> None:
 
 def _load_board_configs() -> dict[str, BoardConfig]:
     """Load board configurations from disk."""
-    BOARDS_CONFIG_FILE = Path.home() / ".config" / "trello_fetcher" / "boards.json"
-
     if not BOARDS_CONFIG_FILE.exists():
         return {}
 
@@ -227,26 +265,55 @@ def _load_board_configs() -> dict[str, BoardConfig]:
         return {}
 
 
+def _save_board_configs(configs: dict[str, BoardConfig]) -> None:
+    """Persist all board configs to disk."""
+    BOARDS_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        bid: {
+            "repo_path": cfg.repo_path,
+            "created_at": cfg.created_at,
+            "last_synced": cfg.last_synced,
+        }
+        for bid, cfg in configs.items()
+    }
+    BOARDS_CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 def _save_board_config(board_id: str, repo_path: str | None) -> None:
     """Save a board configuration to disk."""
-    BOARDS_CONFIG_FILE = Path.home() / ".config" / "trello_fetcher" / "boards.json"
-    BOARDS_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
     # Load existing data for other boards
     configs = _load_board_configs()
     if repo_path:
-        configs[board_id] = BoardConfig(board_id=board_id, repo_path=repo_path)
+        existing = configs.get(board_id)
+        configs[board_id] = BoardConfig(
+            board_id=board_id,
+            repo_path=repo_path,
+            created_at=(existing.created_at if existing else _now_iso()),
+            last_synced=(existing.last_synced if existing else None),
+        )
     elif board_id in configs:
         del configs[board_id]
 
-    data = {bid: {"repo_path": cfg.repo_path, "created_at": cfg.created_at, "last_synced": cfg.last_synced} for bid, cfg in configs.items()}
-    BOARDS_CONFIG_FILE.write_text(json.dumps(data, indent=2))
+    _save_board_configs(configs)
+
+
+def _touch_board_last_synced(board_id: str, last_synced: str) -> None:
+    """Update `last_synced` for an existing linked board."""
+    configs = _load_board_configs()
+    existing = configs.get(board_id)
+    if existing is None:
+        return
+    configs[board_id] = BoardConfig(
+        board_id=existing.board_id,
+        repo_path=existing.repo_path,
+        created_at=existing.created_at,
+        last_synced=last_synced,
+    )
+    _save_board_configs(configs)
 
 
 def _load_done_tasks(board_id: str) -> set[str]:
     """Load done task IDs for a board from disk."""
-    DONE_TASKS_FILE = Path.home() / ".config" / "trello_fetcher" / "done_tasks.json"
-
     if not DONE_TASKS_FILE.exists():
         return set()
 
@@ -259,7 +326,6 @@ def _load_done_tasks(board_id: str) -> set[str]:
 
 def _save_done_tasks(board_id: str, done_task_ids: set[str]) -> None:
     """Save done task IDs for a board to disk."""
-    DONE_TASKS_FILE = Path.home() / ".config" / "trello_fetcher" / "done_tasks.json"
     DONE_TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     # Load existing data for other boards
@@ -270,8 +336,8 @@ def _save_done_tasks(board_id: str, done_task_ids: set[str]) -> None:
             data = {}
     except (json.JSONDecodeError, OSError):
         data = {}
-    data[board_id] = list(done_task_ids)
-    DONE_TASKS_FILE.write_text(json.dumps(data, indent=2))
+    data[board_id] = sorted(done_task_ids)
+    DONE_TASKS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def _cards_to_tasks(
@@ -362,8 +428,7 @@ def _load_env(env_file: str | None) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Trello CLI: Fetch, manage boards, enhanced output",
-        prog="trello"
+        description="Trello CLI: Fetch, manage boards, enhanced output", prog="trello"
     )
 
     parser.add_argument(
@@ -410,19 +475,27 @@ def main(argv: list[str] | None = None) -> int:
     # Board management subcommands
     subparsers = parser.add_subparsers(dest="command", help="Board management commands")
 
-    link_parser = subparsers.add_parser("link-board", help="Link a Trello board to a local path")
+    link_parser = subparsers.add_parser(
+        "link-board", help="Link a Trello board to a local path"
+    )
     link_parser.add_argument("board-id", help="Trello board ID")
-    link_parser.add_argument("--path", required=True, help="Local path to link (e.g., ~/Projects/ionisium)")
+    link_parser.add_argument(
+        "--path", required=True, help="Local path to link (e.g., ~/Projects/ionisium)"
+    )
 
-    unlink_parser = subparsers.add_parser("unlink-board", help="Unlink a Trello board from a local path")
+    unlink_parser = subparsers.add_parser(
+        "unlink-board", help="Unlink a Trello board from a local path"
+    )
     unlink_parser.add_argument("board-id", help="Trello board ID")
 
-    show_parser = subparsers.add_parser("show-boards", help="Show all linked boards with their local paths")
+    subparsers.add_parser(
+        "show-boards", help="Show all linked boards with their local paths"
+    )
 
     args = parser.parse_args(argv)
 
     _load_env(args.env_file)
-    
+
     api_key: str | None = (
         args.api_key if isinstance(args.api_key, str) else None
     ) or os.getenv("TRELLO_API_KEY")
@@ -433,7 +506,7 @@ def main(argv: list[str] | None = None) -> int:
     if not api_key or not token:
         # Only require credentials for fetch operations, not for board management (unless needed later)
         if args.command not in ("link-board", "unlink-board", "show-boards"):
-             raise SystemExit(
+            raise SystemExit(
                 "Missing Trello credentials. Set TRELLO_API_KEY and TRELLO_TOKEN (or pass --api-key/--token)."
             )
 
@@ -461,30 +534,37 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             "Provide exactly one of --list-id or --board-id (or set TRELLO_LIST_ID/TRELLO_BOARD_ID)."
         )
-    
+
     # Initialize tasks list
     tasks: list[Task] = []
-    
+
     if args.command is None:
+        if not api_key or not token:
+            # Keep this explicit so type checkers can narrow to `str`.
+            raise SystemExit(
+                "Missing Trello credentials. Set TRELLO_API_KEY and TRELLO_TOKEN (or pass --api-key/--token)."
+            )
+
         out_path = Path(args.out).expanduser() if args.out else None
 
         client = TrelloClient(api_key=api_key, token=token)
         try:
             list_id_to_name: dict[str, str] = {}
-            
+
             # Load board configs to get repo paths for output
             configs = _load_board_configs()
-            
+
             # Determine mode: single board or all boards
             if args.board_id is not None:
                 # Single board mode: Fetch from specified board with repo path from config
-                board_config = configs.get(args.board_id)
                 cards = client.fetch_cards_for_board(
                     args.board_id, include_closed=args.include_closed
-                    )
-                
+                )
+
                 # Fetch lists for list name resolution
-                lists = client.fetch_lists_for_board(args.board_id, include_closed=args.include_closed)
+                lists = client.fetch_lists_for_board(
+                    args.board_id, include_closed=args.include_closed
+                )
                 for lst in lists:
                     if isinstance(lst, dict):
                         lst_id = lst.get("id")
@@ -493,20 +573,20 @@ def main(argv: list[str] | None = None) -> int:
                             list_id_to_name[lst_id] = lst_name
 
                 tasks.extend(_cards_to_tasks(cards, list_id_to_name=list_id_to_name))
-                
+
             elif args.list_id is not None:
-                 # Fetch from single list
-                 cards = client.fetch_cards_for_list(
+                # Fetch from single list
+                cards = client.fetch_cards_for_list(
                     args.list_id, include_closed=args.include_closed
-                 )
-                 # We can try to fetch the list details to get the name
-                 try:
-                     lst = client.fetch_list(args.list_id)
-                     if isinstance(lst, dict):
-                         list_id_to_name[args.list_id] = str(lst.get("name", ""))
-                 except:
-                     pass
-                 tasks.extend(_cards_to_tasks(cards, list_id_to_name=list_id_to_name))
+                )
+                # We can try to fetch the list details to get the name
+                try:
+                    lst = client.fetch_list(args.list_id)
+                    if isinstance(lst, dict):
+                        list_id_to_name[args.list_id] = str(lst.get("name", ""))
+                except Exception:
+                    pass
+                tasks.extend(_cards_to_tasks(cards, list_id_to_name=list_id_to_name))
 
         except RuntimeError as e:
             # Best-effort: still return cards even if list lookup fails.
@@ -526,9 +606,8 @@ def main(argv: list[str] | None = None) -> int:
             include_desc=bool(args.include_desc),
         )
         return 0
-    
-    return 0
 
+    return 0
 
 
 if __name__ == "__main__":
