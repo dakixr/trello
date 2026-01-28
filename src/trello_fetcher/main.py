@@ -269,6 +269,7 @@ def _tasks_fetch(
                 board_id, include_closed=include_closed
             )
             list_id_to_name: dict[str, str] = {}
+            list_id_order: list[str] = []
             if isinstance(lists_raw, list):
                 for lst in lists_raw:
                     if not isinstance(lst, dict):
@@ -277,6 +278,7 @@ def _tasks_fetch(
                     lst_name = lst.get("name")
                     if isinstance(lst_id, str) and isinstance(lst_name, str):
                         list_id_to_name[lst_id] = lst_name
+                        list_id_order.append(lst_id)
 
             cards = client.fetch_cards_for_board(
                 board_id, include_closed=include_closed
@@ -321,11 +323,20 @@ def _tasks_fetch(
 
             by_bucket: dict[str, list[Any]] = defaultdict(list)
             for t in tasks:
-                bucket = t.list_name or t.list_id or "unknown"
+                bucket = t.list_id or t.list_name or "unknown"
                 by_bucket[bucket].append(t)
 
-            for bucket in sorted(by_bucket.keys()):
-                text_lines.append(f"  [{bucket}]")
+            ordered_buckets: list[str] = [
+                bucket_id for bucket_id in list_id_order if bucket_id in by_bucket
+            ]
+            remaining_buckets = [
+                bucket for bucket in by_bucket.keys() if bucket not in list_id_order
+            ]
+            ordered_buckets.extend(sorted(remaining_buckets))
+
+            for bucket in ordered_buckets:
+                bucket_label = list_id_to_name.get(bucket, bucket)
+                text_lines.append(f"  [{bucket_label}]")
                 for t in by_bucket[bucket]:
                     done_marker = "✓" if t.id in done_ids else " "
                     url = t.short_url or t.url or ""
